@@ -76,8 +76,8 @@ ai_red_agents=True
 ai_strength=1
 ai_decision_strength=1
 ai_precision_strength=1
-n_traj_points=8
-physically_different=False
+n_traj_points=0
+physically_different=True
 enable_shooting=False
 
 

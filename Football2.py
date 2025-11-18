@@ -44,13 +44,13 @@ vmas_device = device  # The device where the simulator is run (VMAS can run on G
 
 # Sampling
 frames_per_batch = 32_000  # Number of team frames collected per training iteration
-n_iters = 1  # Number of sampling and training iterations
+n_iters = 2000  # Number of sampling and training iterations
 total_frames = frames_per_batch * n_iters
 
 # Training
 num_epochs = 8  # Number of optimization steps per training iteration
 minibatch_size = 6000  # Size of the mini-batches in each optimization step
-lr = 3e-4  # Learning rate
+lr = 4e-4  # Learning rate
 max_grad_norm = 0.5  # Maximum norm for the gradients
 
 # PPO
@@ -202,15 +202,15 @@ policy_module = TensorDictModule(
     out_keys=[("agent_blue", "logits")],  # logits for Categorical distribution
 )
 
-
-#print("Action Spec 1: ", env.action_spec_unbatched["agent_blue"])
-#print("Action Spec 2: ", env.action_spec_unbatched["agent_blue"]["action"])
+# print("Action Spec unbatched: ", env.action_spec_unbatched)
+# print("Action Spec 1: ", env.action_spec_unbatched["agent_blue"])
+# print("Action Spec 2: ", env.action_spec_unbatched["agent_blue"]["action"])
 
 
 #print ("ACTION SPEC: ", env.action_spec_unbatched)
 #print ("ACTION KEY", env.action_key)
 
-
+print(env.action_spec_unbatched)
 policy = ProbabilisticActor(
     module=policy_module,
     spec=env.action_spec_unbatched,
