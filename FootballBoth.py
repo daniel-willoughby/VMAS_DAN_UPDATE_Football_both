@@ -103,6 +103,8 @@ env = VmasEnv(
 
 )
 
+# ======================END OF THE CONFIG PARAMETERS ===============================
+
 # print("action_spec:", env.full_action_spec)
 #print("what the fk does this do: ",env.full_action_spec[env.action_key].shape[-1])
 #print("what the fk does this do: ",env.full_action_spec[env.action_keys].shape[-1])
@@ -377,6 +379,7 @@ pbar = tqdm(total=n_iters, desc="episode_reward_mean = 0")
 episode_reward_mean_list = []
 episode_reward_mean_list2 = []
 
+tuple_counter = 0
 
 for tensordict_data in collector:
     tensordict_data.set(
@@ -407,8 +410,16 @@ for tensordict_data in collector:
     # print(tensordict_data.get("agent_blue"))
     # print(tensordict_data.shape)
 
+    # tuple_counter += 1
+    # if tuple_counter <= 1:
+    #     print("=========entering collector loop============")
+    #     print(tensordict_data)
+    # else:
+    #     exit(0)
+
+
     with torch.no_grad():
-        GAE2(
+        GAE(
             tensordict_data,
             params=loss_module2.critic_network_params,
             target_params=loss_module2.target_critic_network_params,
@@ -420,7 +431,7 @@ for tensordict_data in collector:
         )  # Compute GAE and add it to the data
 
     data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
-    replay_buffer.extend(data_view)
+    replay_buffer.extend(data_view)          #DW this appends "data_view" to the replay buffer
 
 
 
