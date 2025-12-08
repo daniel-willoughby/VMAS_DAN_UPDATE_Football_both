@@ -2,7 +2,7 @@
 import torch
 
 # Tensordict modules
-from tensordict.nn import set_composite_lp_aggregate, TensorDictModule
+from tensordict.nn import set_composite_lp_aggregate, TensorDictModule, TensorDictSequential
 from tensordict.nn.distributions import NormalParamExtractor
 from torch import multiprocessing
 
@@ -43,14 +43,15 @@ vmas_device = device  # The device where the simulator is run (VMAS can run on G
 # print("vmas_device is ", vmas_device)
 
 # Sampling
-frames_per_batch = 32_000  # Number of team frames collected per training iteration
-n_iters = 1  # Number of sampling and training iterations
+frames_per_batch = 40_000  # Number of team frames collected per training iteration
+n_iters = 1000  # Number of sampling and training iterations
 total_frames = frames_per_batch * n_iters
 
 # Training
-num_epochs = 8  # Number of optimization steps per training iteration
-minibatch_size = 6000  # Size of the mini-batches in each optimization step
-lr = 3e-4  # Learning rate
+num_epochs = 10  # Number of optimization steps per training iteration
+minibatch_size = 10000  # Size of the mini-batches in each optimization step
+lr_blue = 3e-4
+lr_red = 3e-4  # Learning rate
 max_grad_norm = 0.5  # Maximum norm for the gradients
 
 # PPO
@@ -62,7 +63,7 @@ entropy_eps = 0.01  # coefficient of the entropy term in the PPO loss
 # disable log-prob aggregation
 set_composite_lp_aggregate(False).set()
 
-max_steps = 800  # Episode steps before done
+max_steps = 1000  # Episode steps before done
 num_vmas_envs = (
     frames_per_batch // max_steps
 )  # Number of vectorized envs. frames_per_batch should be divisible by this number
@@ -77,7 +78,7 @@ ai_strength=1
 ai_decision_strength=1
 ai_precision_strength=1
 n_traj_points=8
-physically_different=True
+physically_different=False
 enable_shooting=False
 
 
@@ -150,7 +151,7 @@ policy_net = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],  # n_obs_per_agent
         n_agent_outputs=9,  # one output per discrete action
-        n_agents=env.n_agents,
+        n_agents=n_blue_agents,
         centralised=False,  # decentralized agents using their own observations
         share_params=share_parameters_policy,
         device=device,
@@ -165,7 +166,7 @@ policy_net2 = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_red", "observation"].shape[-1],  # n_obs_per_agent
         n_agent_outputs=9,  # one output per discrete action
-        n_agents=env.n_agents,
+        n_agents=n_red_agents,
         centralised=False,  # decentralized agents using their own observations
         share_params=share_parameters_policy,
         device=device,
@@ -224,6 +225,10 @@ policy2 = ProbabilisticActor(
     return_log_prob=True,
 )
 
+#print("======= actor2 ===========")
+#print(policy2.state_dict())
+#print(policy2)
+#exit(0)
 
 
 # print("======= actor ===========")
@@ -273,17 +278,32 @@ critic2 = TensorDictModule(
 
 
 # DATA COLLECTOR
+# policy2 = torch.load("policy_red.pt", weights_only= False)
+
+
+# for blue start learning with a pre trained policy
+
+# policy = torch.load("policy_blue.pt", weights_only= False)
+# policy2 = torch.load("policy_red.pt", weights_only= False)
+#
+
+combined_policy = TensorDictSequential(
+    policy,
+    policy2,
+)
 
 collector = SyncDataCollector(
     env,
-    None,
+    combined_policy,
     device=vmas_device,
     storing_device=device,
     frames_per_batch=frames_per_batch,
     total_frames=total_frames,
 )
 
-# REPLAY BUFFER
+
+
+#REPLAY BUFFER
 
 replay_buffer = ReplayBuffer(
     storage=LazyTensorStorage(
@@ -329,19 +349,35 @@ loss_module2.set_keys(  # We have to tell the loss where to find the keys
     terminated=("agent_red", "terminated"),
 )
 
-
 loss_module.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
 )  # We build GAE
 
+loss_module2.make_value_estimator(
+    ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
+)  # We build GAE2
+
+
 GAE = loss_module.value_estimator
 GAE2 = loss_module2.value_estimator
 
-optim = torch.optim.Adam(loss_module.parameters(), lr)
+optim = torch.optim.Adam(loss_module.parameters(), lr_blue)
+optim2 = torch.optim.Adam(loss_module2.parameters(), lr_red)
+
 
 pbar = tqdm(total=n_iters, desc="episode_reward_mean = 0")
 
+#some debug put in by George - to print out the tensordict structure
+# for tensordict_data in collector:
+#     print("TD:",tensordict_data)
+
+# print("=====================before===================================================")
+# print(collector)
+# exit(0)
 episode_reward_mean_list = []
+episode_reward_mean_list2 = []
+
+
 for tensordict_data in collector:
     tensordict_data.set(
         ("next", "agent_blue", "done"),
@@ -355,10 +391,28 @@ for tensordict_data in collector:
         .unsqueeze(-1)
         .expand(tensordict_data.get_item_shape(("next", env.reward_keys[0]))),
     )
+    tensordict_data.set(
+        ("next", "agent_red", "done"),
+        tensordict_data.get(("next", "done"))
+        .unsqueeze(-1)
+        .expand(tensordict_data.get_item_shape(("next", env.reward_keys[1]))),
+    )
+    tensordict_data.set(
+        ("next", "agent_red", "terminated"),
+        tensordict_data.get(("next", "terminated"))
+        .unsqueeze(-1)
+        .expand(tensordict_data.get_item_shape(("next", env.reward_keys[1]))),
+    )
     # We need to expand the done and terminated to match the reward shape (this is expected by the value estimator)
     # print(tensordict_data.get("agent_blue"))
     # print(tensordict_data.shape)
+
     with torch.no_grad():
+        GAE2(
+            tensordict_data,
+            params=loss_module2.critic_network_params,
+            target_params=loss_module2.target_critic_network_params,
+        )  # Compute GAE and add it to the data
         GAE(
             tensordict_data,
             params=loss_module.critic_network_params,
@@ -368,18 +422,19 @@ for tensordict_data in collector:
     data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
     replay_buffer.extend(data_view)
 
-    print(replay_buffer)
-    for _ in range(num_epochs):
-        for _ in range(frames_per_batch // minibatch_size):
-            subdata = replay_buffer.sample()
-            loss_vals = loss_module(subdata)
 
+
+    for _ in range(num_epochs):
+
+        for _ in range(frames_per_batch // minibatch_size ):
+            subdata = replay_buffer.sample()
+            # print("blue subdata",subdata)
+            loss_vals = loss_module(subdata)
             loss_value = (
                 loss_vals["loss_objective"]
                 + loss_vals["loss_critic"]
                 + loss_vals["loss_entropy"]
             )
-
             loss_value.backward()
 
             torch.nn.utils.clip_grad_norm_(
@@ -389,31 +444,82 @@ for tensordict_data in collector:
             optim.step()
             optim.zero_grad()
 
+
+        for _ in range(frames_per_batch // minibatch_size ):
+            subdata2 = replay_buffer.sample()
+            # print("red subdata",subdata)
+            #print(subdata)
+            loss_vals = loss_module2(subdata2)
+            loss_value2 = (
+                loss_vals["loss_objective"]
+                + loss_vals["loss_critic"]
+                + loss_vals["loss_entropy"]
+            )
+
+            loss_value2.backward()
+
+            torch.nn.utils.clip_grad_norm_(
+                loss_module2.parameters(), max_grad_norm
+            )  # Optional
+
+            optim2.step()
+            optim2.zero_grad()
+
+
+
+
+
     collector.update_policy_weights_()
 
+
     # Logging
-    done = tensordict_data.get(("next", "agent_blue", "done"))
+    done = tensordict_data.get(("next", "agent_blue", "done")) # or tensordict_data.get(("next", "agent_red", "done"))
     episode_reward_mean = (
         tensordict_data.get(("next", "agent_blue", "episode_reward"))[done].mean().item()
     )
     episode_reward_mean_list.append(episode_reward_mean)
-    pbar.set_description(f"episode_reward_mean = {episode_reward_mean}", refresh=False)
+
+    episode_reward_mean2 = (
+        tensordict_data.get(("next", "agent_red", "episode_reward"))[done].mean().item()
+    )
+    episode_reward_mean_list2.append(episode_reward_mean2)
+    pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean},{episode_reward_mean2}", refresh=False)
     pbar.update()
 
 
+# =============training loop finished, now rollout ==========================
 
 
-torch.save(policy, "PPO_navigation_policy.pt")
-new_policy = torch.load("PPO_navigation_policy.pt", weights_only= False)
+torch.save(policy, "policy_blue.pt")
+torch.save(policy2, "policy_red.pt")
+
+# torch.save(policy, "PPO_navigation_policy.pt")
+policy_blue = torch.load("policy_blue.pt", weights_only= False)
+policy_red = torch.load("policy_red.pt", weights_only= False)
+
+combined_policy = TensorDictSequential(
+    policy_blue,
+    policy_red,
+)
+
+
 
 #print(type(new_policy))
-new_policy.eval()
+combined_policy.eval()
+
 
 
 plt.plot(episode_reward_mean_list)
 plt.xlabel("Training iterations")
 plt.ylabel("Reward")
-plt.title("Episode reward mean")
+plt.title("Episode reward mean blue")
+plt.show()
+
+
+plt.plot(episode_reward_mean_list2)
+plt.xlabel("Training iterations")
+plt.ylabel("Reward")
+plt.title("Episode reward mean red")
 plt.show()
 
 i = 0
@@ -421,7 +527,7 @@ while(i < 1000):
     with torch.no_grad():
        env.rollout(
            max_steps=max_steps,
-           policy=new_policy,
+           policy=combined_policy,
            callback=lambda env, _: env.render(),
            auto_cast_to_device=True,
            break_when_any_done=False,

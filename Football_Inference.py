@@ -77,7 +77,7 @@ ai_strength=1
 ai_decision_strength=1
 ai_precision_strength=1
 n_traj_points=0
-physically_different=True
+physically_different=False
 enable_shooting=False
 
 
@@ -384,7 +384,7 @@ episode_reward_mean_list = []
 
 
 #torch.save(policy, "PPO_navigation_policy.pt")
-new_policy = torch.load("PPO_navigation_policy.pt", weights_only= False)
+new_policy = torch.load("policy_blue.pt", weights_only= False)
 
 
 
