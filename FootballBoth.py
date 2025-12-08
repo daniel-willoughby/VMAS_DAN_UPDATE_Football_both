@@ -315,6 +315,14 @@ replay_buffer = ReplayBuffer(
     batch_size=minibatch_size,  # We will sample minibatches of this size
 )
 
+replay_buffer2 = ReplayBuffer(
+    storage=LazyTensorStorage(
+        frames_per_batch, device=device
+    ),  # We store the frames_per_batch collected at each iteration
+    sampler=SamplerWithoutReplacement(),
+    batch_size=minibatch_size,  # We will sample minibatches of this size
+)
+
 # LOSS FUNCTION
 
 loss_module = ClipPPOLoss(
@@ -421,18 +429,42 @@ for tensordict_data in collector:
     with torch.no_grad():
         GAE(
             tensordict_data,
-            params=loss_module2.critic_network_params,
-            target_params=loss_module2.target_critic_network_params,
-        )  # Compute GAE and add it to the data
-        GAE(
-            tensordict_data,
             params=loss_module.critic_network_params,
             target_params=loss_module.target_critic_network_params,
         )  # Compute GAE and add it to the data
 
     data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
-    replay_buffer.extend(data_view)          #DW this appends "data_view" to the replay buffer
+    replay_buffer.extend(data_view)  # DW this appends "data_view" to the replay buffer
 
+    with torch.no_grad():
+        GAE(
+            tensordict_data,
+            params=loss_module2.critic_network_params,
+            target_params=loss_module2.target_critic_network_params,
+        )  # Compute GAE and add it to the data
+
+
+    data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
+    replay_buffer2.extend(data_view)          #DW this appends "data_view" to the replay buffer
+
+
+    # advantages = replay_buffer.storage["advantage"]
+    # print("=== Advantage Statistics ===")
+    # print(f"Shape: {advantages.shape}")
+    # print(f"Mean: {advantages.mean().item():.6f},end=''")
+    # print(f"Std:  {advantages.std().item():.6f},end=''")
+    # print(f"Min:  {advantages.min().item():.6f}, Max: {advantages.max().item():.6f},end=''")
+    # print(replay_buffer)
+    # print(advantages)
+    #
+    # advantages = replay_buffer2.storage["advantage"]
+    # print("=== Advantage Statistics ===")
+    # print(f"Shape: {advantages.shape}")
+    # print(f"Mean: {advantages.mean().item():.6f},end=''")
+    # print(f"Std:  {advantages.std().item():.6f},end=''")
+    # print(f"Min:  {advantages.min().item():.6f}, Max: {advantages.max().item():.6f},end=''")
+    # print(replay_buffer2)
+    # print(advantages)
 
 
     for _ in range(num_epochs):
@@ -457,7 +489,7 @@ for tensordict_data in collector:
 
 
         for _ in range(frames_per_batch // minibatch_size ):
-            subdata2 = replay_buffer.sample()
+            subdata2 = replay_buffer2.sample()
             # print("red subdata",subdata)
             #print(subdata)
             loss_vals = loss_module2(subdata2)
