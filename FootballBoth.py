@@ -44,7 +44,7 @@ vmas_device = device  # The device where the simulator is run (VMAS can run on G
 
 # Sampling
 frames_per_batch = 40_000  # Number of team frames collected per training iteration
-n_iters = 1001  # Number of sampling and training iterations
+n_iters = 1000  # Number of sampling and training iterations
 total_frames = frames_per_batch * n_iters
 
 # Training
@@ -63,7 +63,7 @@ entropy_eps = 0.01  # coefficient of the entropy term in the PPO loss
 # disable log-prob aggregation
 set_composite_lp_aggregate(False).set()
 
-max_steps = 1000  # Episode steps before done
+max_steps = 600  # Episode steps before done
 num_vmas_envs = (
     frames_per_batch // max_steps
 )  # Number of vectorized envs. frames_per_batch should be divisible by this number
@@ -371,6 +371,13 @@ loss_module2.make_value_estimator(
 GAE = loss_module.value_estimator
 GAE2 = loss_module2.value_estimator
 
+# print("=== All Parameters (name + shape) ===")
+# for name, param in loss_module.named_parameters():
+#     print(f"{name}: {param.shape} ({param.numel():,})")
+# exit(0)
+
+# DW optimiser is given the loss_module.parameters (weights and biases) of the network plus the learning rate
+
 optim = torch.optim.Adam(loss_module.parameters(), lr_blue)
 optim2 = torch.optim.Adam(loss_module2.parameters(), lr_red)
 
@@ -433,38 +440,23 @@ for tensordict_data in collector:
             target_params=loss_module.target_critic_network_params,
         )  # Compute GAE and add it to the data
 
-    data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
+    scrubbed = tensordict_data.exclude("agent_red", ("next", "agent_red"))
+    data_view = scrubbed.reshape(-1)  # Flatten the batch size to shuffle data
     replay_buffer.extend(data_view)  # DW this appends "data_view" to the replay buffer
 
+
+
     with torch.no_grad():
-        GAE(
+        GAE2(
             tensordict_data,
             params=loss_module2.critic_network_params,
             target_params=loss_module2.target_critic_network_params,
         )  # Compute GAE and add it to the data
 
-
-    data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
+    scrubbed = tensordict_data.exclude("agent_blue", ("next", "agent_blue"))
+    data_view = scrubbed.reshape(-1)  # Flatten the batch size to shuffle data
     replay_buffer2.extend(data_view)          #DW this appends "data_view" to the replay buffer
 
-
-    # advantages = replay_buffer.storage["advantage"]
-    # print("=== Advantage Statistics ===")
-    # print(f"Shape: {advantages.shape}")
-    # print(f"Mean: {advantages.mean().item():.6f},end=''")
-    # print(f"Std:  {advantages.std().item():.6f},end=''")
-    # print(f"Min:  {advantages.min().item():.6f}, Max: {advantages.max().item():.6f},end=''")
-    # print(replay_buffer)
-    # print(advantages)
-    #
-    # advantages = replay_buffer2.storage["advantage"]
-    # print("=== Advantage Statistics ===")
-    # print(f"Shape: {advantages.shape}")
-    # print(f"Mean: {advantages.mean().item():.6f},end=''")
-    # print(f"Std:  {advantages.std().item():.6f},end=''")
-    # print(f"Min:  {advantages.min().item():.6f}, Max: {advantages.max().item():.6f},end=''")
-    # print(replay_buffer2)
-    # print(advantages)
 
 
     for _ in range(num_epochs):
@@ -478,6 +470,7 @@ for tensordict_data in collector:
                 + loss_vals["loss_critic"]
                 + loss_vals["loss_entropy"]
             )
+
             loss_value.backward()
 
             torch.nn.utils.clip_grad_norm_(
@@ -528,6 +521,9 @@ for tensordict_data in collector:
     episode_reward_mean_list2.append(episode_reward_mean2)
     pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean},{episode_reward_mean2}", refresh=False)
     pbar.update()
+
+    torch.save(policy, "policy_blue.pt")
+    torch.save(policy2, "policy_red.pt")
 
 
 # =============training loop finished, now rollout ==========================

@@ -507,7 +507,7 @@ combined_policy.eval()
 
 
 i = 0
-while(i < 1000):
+while(i < 3):
     with torch.no_grad():
        env.rollout(
            max_steps=max_steps,

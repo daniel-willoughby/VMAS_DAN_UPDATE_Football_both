@@ -341,6 +341,10 @@ for tensordict_data in collector:
     data_view = tensordict_data.reshape(-1)  # Flatten the batch size to shuffle data
     replay_buffer.extend(data_view)
 
+    print(replay_buffer)
+
+    exit(0)
+
     for _ in range(num_epochs):
         for _ in range(frames_per_batch // minibatch_size):
             subdata = replay_buffer.sample()
