@@ -26,6 +26,10 @@ from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 # Loss
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
 
+BLUE = 0
+RED = 1
+
+
 # Utils
 torch.manual_seed(0)
 from matplotlib import pyplot as plt
@@ -41,6 +45,7 @@ device = (
 vmas_device = device  # The device where the simulator is run (VMAS can run on GPU)
 
 # print("vmas_device is ", vmas_device)
+# PARAMETERS START HERE
 
 # Sampling
 frames_per_batch = 40_000  # Number of team frames collected per training iteration
@@ -49,7 +54,7 @@ total_frames = frames_per_batch * n_iters
 
 # Training
 num_epochs = 10  # Number of optimization steps per training iteration
-minibatch_size = 10000  # Size of the mini-batches in each optimization step
+minibatch_size = 2000  # Size of the mini-batches in each optimization step
 lr_blue = 3e-4
 lr_red = 3e-4  # Learning rate
 max_grad_norm = 0.5  # Maximum norm for the gradients
@@ -289,10 +294,19 @@ critic2 = TensorDictModule(
 # policy2 = torch.load("policy_red.pt", weights_only= False)
 #
 
+# print(policy)
+# print("======================================")
+
 combined_policy = TensorDictSequential(
     policy,
     policy2,
 )
+# print(combined_policy)
+# print("+++++++++++++++++++++++++++++++++++++++++")
+# print(combined_policy[1])
+
+
+
 
 collector = SyncDataCollector(
     env,
@@ -326,7 +340,7 @@ replay_buffer2 = ReplayBuffer(
 # LOSS FUNCTION
 
 loss_module = ClipPPOLoss(
-    actor_network=policy,
+    actor_network=combined_policy[BLUE],
     critic_network=critic,
     clip_epsilon=clip_epsilon,
     entropy_coeff=entropy_eps,
@@ -334,7 +348,7 @@ loss_module = ClipPPOLoss(
 )
 
 loss_module2 = ClipPPOLoss(
-    actor_network=policy2,
+    actor_network=combined_policy[RED],
     critic_network=critic2,
     clip_epsilon=clip_epsilon,
     entropy_coeff=entropy_eps,
@@ -358,6 +372,8 @@ loss_module2.set_keys(  # We have to tell the loss where to find the keys
     done=("agent_red", "done"),
     terminated=("agent_red", "terminated"),
 )
+
+# we think gamma and lmbda are parameters for the estimator (GAE)
 
 loss_module.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
@@ -435,7 +451,7 @@ for tensordict_data in collector:
 
     with torch.no_grad():
         GAE(
-            tensordict_data,
+            tensordict_data[BLUE],
             params=loss_module.critic_network_params,
             target_params=loss_module.target_critic_network_params,
         )  # Compute GAE and add it to the data
@@ -448,7 +464,7 @@ for tensordict_data in collector:
 
     with torch.no_grad():
         GAE2(
-            tensordict_data,
+            tensordict_data[RED],
             params=loss_module2.critic_network_params,
             target_params=loss_module2.target_critic_network_params,
         )  # Compute GAE and add it to the data
@@ -522,15 +538,15 @@ for tensordict_data in collector:
     pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean},{episode_reward_mean2}", refresh=False)
     pbar.update()
 
-    torch.save(policy, "policy_blue.pt")
-    torch.save(policy2, "policy_red.pt")
+    torch.save(combined_policy[BLUE], "policy_blue.pt")
+    torch.save(combined_policy[RED], "policy_red.pt")
 
 
 # =============training loop finished, now rollout ==========================
 
 
-torch.save(policy, "policy_blue.pt")
-torch.save(policy2, "policy_red.pt")
+torch.save(combined_policy[BLUE], "policy_blue.pt")
+torch.save(combined_policy[RED], "policy_red.pt")
 
 # torch.save(policy, "PPO_navigation_policy.pt")
 policy_blue = torch.load("policy_blue.pt", weights_only= False)
