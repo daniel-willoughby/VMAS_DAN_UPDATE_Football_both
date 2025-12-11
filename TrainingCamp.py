@@ -11,7 +11,6 @@ The agents can be trained from initial random weights and biases or from existin
 # Imports
 
 import torch
-from torch import multiprocessing
 from torch.distributions import Categorical
 
 from torchrl.collectors import SyncDataCollector
@@ -25,7 +24,6 @@ from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
 
 from tensordict.nn import set_composite_lp_aggregate, TensorDictModule, TensorDictSequential
-from tensordict.nn.distributions import NormalParamExtractor
 
 from matplotlib import pyplot as plt
 
@@ -38,18 +36,18 @@ LOAD_CHECKPOINT = False                     # Load pre-saved weights and biases?
 vmas_device = torch.device("cpu")           # we do not use a GPU
 
 # Configurable Hyperparameters
-frames_per_batch = 40_000
-n_iters = 10000
-total_frames = frames_per_batch * n_iters
-num_epochs = 10
+frames_per_batch = 52800
+total_iterations = 3000
+total_frames = frames_per_batch * total_iterations
+total_epochs = 10
 minibatch_size = 2000
-lr_blue = 3e-4
-lr_red = 3e-4
+learning_rate_blue = 3e-4
+learning_rate_red = 3e-4
 max_grad_norm = 0.5
 clip_epsilon = 0.2
 gamma = 0.99
-lmbda = 0.95
-entropy_eps = 0.01
+lmbda = 0.95                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
+epsilon = 0.01                              # entropy coefficient
 share_parameters_policy = True              # team members share a single policy
 set_composite_lp_aggregate(False).set()     # torchRL - disables auto log-probability aggregation
 share_parameters_critic = True
@@ -90,7 +88,7 @@ env = TransformedEnv(
 
 check_env_specs(env)
 
-policy_net = torch.nn.Sequential(
+policy_net_blue = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],
         n_agent_outputs=9,
@@ -104,7 +102,7 @@ policy_net = torch.nn.Sequential(
     ),
 )
 
-policy_net2 = torch.nn.Sequential(
+policy_net_red = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_red", "observation"].shape[-1],
         n_agent_outputs=9,
@@ -118,20 +116,20 @@ policy_net2 = torch.nn.Sequential(
     ),
 )
 
-policy_module = TensorDictModule(
-    policy_net,
+policy_module_blue = TensorDictModule(
+    policy_net_blue,
     in_keys=[("agent_blue", "observation")],
     out_keys=[("agent_blue", "logits")],
 )
 
-policy_module2 = TensorDictModule(
-    policy_net2,
+policy_module_red = TensorDictModule(
+    policy_net_red,
     in_keys=[("agent_red", "observation")],
     out_keys=[("agent_red", "logits")],
 )
 
-policy = ProbabilisticActor(
-    module=policy_module,
+policy_blue= ProbabilisticActor(
+    module=policy_module_blue,
     # spec=env.action_spec_unbatched,
     in_keys=[("agent_blue", "logits")],
     out_keys=env.action_keys[0],
@@ -140,8 +138,8 @@ policy = ProbabilisticActor(
     return_log_prob=True,
 )
 
-policy2 = ProbabilisticActor(
-    module=policy_module2,
+policy_red = ProbabilisticActor(
+    module=policy_module_red,
     # spec=env.action_spec_unbatched,
     in_keys=[("agent_red", "logits")],
     out_keys=env.action_keys[1],
@@ -150,7 +148,7 @@ policy2 = ProbabilisticActor(
     return_log_prob=True,
 )
 
-critic_net = MultiAgentMLP(
+critic_net_blue = MultiAgentMLP(
     n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],
     n_agent_outputs=1,
     n_agents=n_blue_agents,
@@ -162,7 +160,7 @@ critic_net = MultiAgentMLP(
     activation_class=torch.nn.Tanh,
 )
 
-critic_net2 = MultiAgentMLP(
+critic_net_red = MultiAgentMLP(
     n_agent_inputs=env.observation_spec["agent_red", "observation"].shape[-1],
     n_agent_outputs=1,
     n_agents=n_red_agents,
@@ -174,25 +172,25 @@ critic_net2 = MultiAgentMLP(
     activation_class=torch.nn.Tanh,
 )
 
-critic = TensorDictModule(
-    module=critic_net,
+critic_blue = TensorDictModule(
+    module=critic_net_blue,
     in_keys=[("agent_blue", "observation")],
     out_keys=[("agent_blue", "state_value")],
 )
 
-critic2 = TensorDictModule(
-    module=critic_net2,
+critic_red = TensorDictModule(
+    module=critic_net_red,
     in_keys=[("agent_red", "observation")],
     out_keys=[("agent_red", "state_value")],
 )
 
 if LOAD_CHECKPOINT:
-    policy = torch.load("policy_blue.pt", weights_only= False)
-    policy2 = torch.load("policy_red.pt", weights_only= False)
+    policy_blue= torch.load("policy_blue.pt", weights_only= False)
+    policy_red = torch.load("policy_red.pt", weights_only= False)
 
 combined_policy = TensorDictSequential(
-    policy,
-    policy2,
+    policy_blue,
+    policy_red,
 )
 
 collector = SyncDataCollector(
@@ -206,7 +204,7 @@ collector = SyncDataCollector(
 
 # Replay buffer creation
 
-replay_buffer = ReplayBuffer(
+replay_buffer_blue = ReplayBuffer(
     storage=LazyTensorStorage(
         frames_per_batch, device=vmas_device
     ),  # We store the frames_per_batch collected at each iteration
@@ -214,7 +212,7 @@ replay_buffer = ReplayBuffer(
     batch_size=minibatch_size,  # We will sample minibatches of this size
 )
 
-replay_buffer2 = ReplayBuffer(
+replay_buffer_red = ReplayBuffer(
     storage=LazyTensorStorage(
         frames_per_batch, device=vmas_device
     ),  # We store the frames_per_batch collected at each iteration
@@ -224,23 +222,23 @@ replay_buffer2 = ReplayBuffer(
 
 # Loss function
 
-loss_module = ClipPPOLoss(
+loss_module_blue = ClipPPOLoss(
     actor_network=combined_policy[BLUE],
-    critic_network=critic,
+    critic_network=critic_blue,
     clip_epsilon=clip_epsilon,
-    entropy_coeff=entropy_eps,
+    entropy_coeff=epsilon,
     normalize_advantage=False,  # Important to avoid normalizing across the agent dimension
 )
 
-loss_module2 = ClipPPOLoss(
+loss_module_red = ClipPPOLoss(
     actor_network=combined_policy[RED],
-    critic_network=critic2,
+    critic_network=critic_red,
     clip_epsilon=clip_epsilon,
-    entropy_coeff=entropy_eps,
+    entropy_coeff=epsilon,
     normalize_advantage=False,  # Important to avoid normalizing across the agent dimension
 )
 
-loss_module.set_keys(  # We have to tell the loss where to find the keys
+loss_module_blue.set_keys(  # We have to tell the loss where to find the keys
     reward=env.reward_keys[0],
     action=env.action_keys[0],
     value=("agent_blue", "state_value"),
@@ -248,7 +246,7 @@ loss_module.set_keys(  # We have to tell the loss where to find the keys
     terminated=("agent_blue", "terminated"),
 )
 
-loss_module2.set_keys(  # We have to tell the loss where to find the keys
+loss_module_red.set_keys(  # We have to tell the loss where to find the keys
     reward=env.reward_keys[1],
     action=env.action_keys[1],
     value=("agent_red", "state_value"),
@@ -258,25 +256,25 @@ loss_module2.set_keys(  # We have to tell the loss where to find the keys
 
 # we think gamma and lmbda are parameters for the estimator (GAE)
 
-loss_module.make_value_estimator(
+loss_module_blue.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
-)  # We build GAE
+)
 
-loss_module2.make_value_estimator(
+loss_module_red.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
-)  # We build GAE2
+)
 
 
-GAE = loss_module.value_estimator
-GAE2 = loss_module2.value_estimator
+GAE_blue = loss_module_blue.value_estimator
+GAE_red = loss_module_red.value_estimator
 
-optim = torch.optim.Adam(loss_module.parameters(), lr_blue)
-optim2 = torch.optim.Adam(loss_module2.parameters(), lr_red)
+optim_blue = torch.optim.Adam(loss_module_blue.parameters(), learning_rate_blue)
+optim_red = torch.optim.Adam(loss_module_red.parameters(), learning_rate_red)
 
-pbar = tqdm(total=n_iters, desc="episode_reward_mean = 0")
+pbar = tqdm(total=total_iterations, desc="episode_reward_mean = 0")
 
-episode_reward_mean_list = []
-episode_reward_mean_list2 = []
+episode_reward_mean_list_blue = []
+episode_reward_mean_list_red = []
 
 tuple_counter = 0
 
@@ -307,33 +305,33 @@ for tensordict_data in collector:
     )
 
     with torch.no_grad():
-        GAE(
-            tensordict_data[BLUE],
-            params=loss_module.critic_network_params,
-            target_params=loss_module.target_critic_network_params,
-        ) # Compute GAE and add it to the tensordict
+        GAE_blue(
+            tensordict_data,                                            # must provide full tensordict
+            params=loss_module_blue.critic_network_params,
+            target_params=loss_module_blue.target_critic_network_params,
+        ) # Compute GAE_blue and add it to the tensordict
 
     scrubbed = tensordict_data.exclude("agent_red", ("next", "agent_red"))
     data_view = scrubbed.reshape(-1)
-    replay_buffer.extend(data_view)  # dw this appends "data_view" to the replay buffer
+    replay_buffer_blue.extend(data_view)  # dw this appends "data_view" to the replay buffer
 
     with torch.no_grad():
-        GAE2(
-            tensordict_data[RED],
-            params=loss_module2.critic_network_params,
-            target_params=loss_module2.target_critic_network_params,
+        GAE_red(
+            tensordict_data,
+            params=loss_module_red.critic_network_params,
+            target_params=loss_module_red.target_critic_network_params,
         )
 
     scrubbed = tensordict_data.exclude("agent_blue", ("next", "agent_blue"))
     data_view = scrubbed.reshape(-1)
-    replay_buffer2.extend(data_view)  # DW this appends "data_view" to the replay buffer
+    replay_buffer_red.extend(data_view)  # DW this appends "data_view" to the replay buffer
 
-    for _ in range(num_epochs):
+    for _ in range(total_epochs):
 
         for _ in range(frames_per_batch // minibatch_size):
-            subdata = replay_buffer.sample()
+            subdata = replay_buffer_blue.sample()
             # print("blue subdata",subdata)
-            loss_vals = loss_module(subdata)
+            loss_vals = loss_module_blue(subdata)
             loss_value = (
                     loss_vals["loss_objective"]
                     + loss_vals["loss_critic"]
@@ -343,46 +341,46 @@ for tensordict_data in collector:
             loss_value.backward()
 
             torch.nn.utils.clip_grad_norm_(
-                loss_module.parameters(), max_grad_norm
+                loss_module_blue.parameters(), max_grad_norm
             )  # Optional
 
-            optim.step()
-            optim.zero_grad()
+            optim_blue.step()
+            optim_blue.zero_grad()
 
         for _ in range(frames_per_batch // minibatch_size):
-            subdata2 = replay_buffer2.sample()
+            subdata2 = replay_buffer_red.sample()
             # print("red subdata",subdata)
             # print(subdata)
-            loss_vals = loss_module2(subdata2)
-            loss_value2 = (
+            loss_vals = loss_module_red(subdata2)
+            loss_value = (
                     loss_vals["loss_objective"]
                     + loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
             )
 
-            loss_value2.backward()
+            loss_value.backward()
 
             torch.nn.utils.clip_grad_norm_(
-                loss_module2.parameters(), max_grad_norm
+                loss_module_red.parameters(), max_grad_norm
             )  # Optional
 
-            optim2.step()
-            optim2.zero_grad()
+            optim_red.step()
+            optim_red.zero_grad()
 
     collector.update_policy_weights_()
 
     # Logging
     done = tensordict_data.get(("next", "agent_blue", "done"))  # or tensordict_data.get(("next", "agent_red", "done"))
-    episode_reward_mean = (
+    episode_reward_mean_blue = (
         tensordict_data.get(("next", "agent_blue", "episode_reward"))[done].mean().item()
     )
-    episode_reward_mean_list.append(episode_reward_mean)
+    episode_reward_mean_list_blue.append(episode_reward_mean_blue)
 
-    episode_reward_mean2 = (
+    episode_reward_mean_red = (
         tensordict_data.get(("next", "agent_red", "episode_reward"))[done].mean().item()
     )
-    episode_reward_mean_list2.append(episode_reward_mean2)
-    pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean},{episode_reward_mean2}", refresh=False)
+    episode_reward_mean_list_red.append(episode_reward_mean_red)
+    pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean_blue},{episode_reward_mean_red}", refresh=False)
     pbar.update()
 
     torch.save(combined_policy[BLUE], "policy_blue.pt")
@@ -390,34 +388,15 @@ for tensordict_data in collector:
 
 # =============training loop finished, now show the learning graph ==========================
 
-plt.plot(episode_reward_mean_list)
+plt.plot(episode_reward_mean_list_blue)
 plt.xlabel("Training iterations")
 plt.ylabel("Reward")
 plt.title("Episode reward mean blue")
 plt.show()
 
 
-plt.plot(episode_reward_mean_list2)
+plt.plot(episode_reward_mean_list_red)
 plt.xlabel("Training iterations")
 plt.ylabel("Reward")
 plt.title("Episode reward mean red")
 plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Optional loading of checkpoint data
-
-# Training Loop ....
-
-# Inference/Rollout
