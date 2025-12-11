@@ -43,23 +43,23 @@ total_epochs = 10
 minibatch_size = 2000
 learning_rate_blue = 3e-4
 learning_rate_red = 3e-4
-max_grad_norm = 0.5
-clip_epsilon = 0.2
-gamma = 0.99
+max_grad_norm = 0.5                         # PPO parameter ...
+clip_epsilon = 0.2                          # clipping parameter
+gamma = 0.99                                # discount rate
 lmbda = 0.95                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
 epsilon = 0.01                              # entropy coefficient
 share_parameters_policy = True              # team members share a single policy
 set_composite_lp_aggregate(False).set()     # torchRL - disables auto log-probability aggregation
 share_parameters_critic = True
-mappo = True                                # IPPO if False
+mappo = True                                # Set to True for MAPPO, False for IPPO
 
 
 # Environment Parameters
 n_blue_agents = 5
 n_red_agents = 5
-max_steps = 600
+max_steps = 600                             # limit steps in an episode (truncate) if it doesnt terminate
 num_vmas_envs = (
-    frames_per_batch // max_steps
+    frames_per_batch // max_steps           # Number of parallel environments that VMAS will run (multi-threading)
 )
 
 env = VmasEnv(
@@ -70,24 +70,28 @@ env = VmasEnv(
     device=vmas_device,
     n_blue_agents=n_blue_agents,
     n_red_agents=n_red_agents,
-    ai_blue_agents=False,
+    ai_blue_agents=False,                   # we disable the built-in heuristic agents - all our agents learn
     ai_red_agents=False,
-    physically_different=False,
-    enable_shooting=False
+    physically_different=False,             # heterogeneous agents for blue team
+    enable_shooting=False                   # kicking/shooting physics added for blue team
 )
 
 
 # Initialisation
 
-torch.manual_seed(0)
+torch.manual_seed(0)                        # a seed allows repeatable results for comparative/analytic purposes
 
+# track and accumulate agent rewards within the environment
 env = TransformedEnv(
     env,
     RewardSum(in_keys=env.reward_keys, out_keys=[("agent_blue", "episode_reward"), ("agent_red", "episode_reward")]),
 )
 
-check_env_specs(env)
+check_env_specs(env)                        # simple self-test to sanity check definitions
 
+# create either a neural network for every blue agent if share_parameters_policy = True, or a single neural network for
+# all blue agents if share_parameters_policy is False.
+# we have chosen a depth of 2 and a num_cells of 128 as a compromise between runtime and performance.
 policy_net_blue = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],
@@ -96,7 +100,7 @@ policy_net_blue = torch.nn.Sequential(
         centralised=False,
         share_params=share_parameters_policy,
         device=vmas_device,
-        depth=2,
+        depth=2,                            # number of fully connected layers
         num_cells=128,
         activation_class=torch.nn.Tanh,
     ),
@@ -116,6 +120,7 @@ policy_net_red = torch.nn.Sequential(
     ),
 )
 
+# wrap policy_net_blue in the standard tensordict format for TorchRL
 policy_module_blue = TensorDictModule(
     policy_net_blue,
     in_keys=[("agent_blue", "observation")],
@@ -128,6 +133,9 @@ policy_module_red = TensorDictModule(
     out_keys=[("agent_red", "logits")],
 )
 
+# Select an action based on the outputs (logits) from the neural network by constructing a distribution to sample from.
+# In our case we create a categorical distribution as there are multiple discrete actions. We then sample from this
+# distribution using multinomial sampling (selecting each action with probability proportional to the categories weight).
 policy_blue= ProbabilisticActor(
     module=policy_module_blue,
     # spec=env.action_spec_unbatched,
