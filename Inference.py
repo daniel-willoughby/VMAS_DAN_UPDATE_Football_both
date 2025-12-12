@@ -123,6 +123,7 @@ for _ in range (environment_runs):
        )
 
 
+# adding rollout rewards
 # rollout = env.rollout(max_steps=100)
 # rewards = rollout["agent_blue","episode_reward"]  # Shape: (n_agents, max_steps) or (total_steps,)
 
