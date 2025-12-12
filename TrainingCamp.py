@@ -50,7 +50,7 @@ lmbda = 0.95                                # "lmbda" is the standard spelling i
 epsilon = 0.01                              # entropy coefficient
 share_parameters_policy = True              # team members share a single policy
 set_composite_lp_aggregate(False).set()     # torchRL - disables auto log-probability aggregation
-share_parameters_critic = True
+share_parameters_critic = True              # all agents of the same team will use the same critic
 mappo = True                                # Set to True for MAPPO, False for IPPO
 
 
@@ -81,7 +81,7 @@ env = VmasEnv(
 
 torch.manual_seed(0)                        # a seed allows repeatable results for comparative/analytic purposes
 
-# track and accumulate agent rewards within the environment
+# Track and accumulate agent rewards within the environment.
 env = TransformedEnv(
     env,
     RewardSum(in_keys=env.reward_keys, out_keys=[("agent_blue", "episode_reward"), ("agent_red", "episode_reward")]),
@@ -89,9 +89,9 @@ env = TransformedEnv(
 
 check_env_specs(env)                        # simple self-test to sanity check definitions
 
-# create either a neural network for every blue agent if share_parameters_policy = True, or a single neural network for
+# Create either a neural network for every blue agent if share_parameters_policy = True, or a single neural network for
 # all blue agents if share_parameters_policy is False.
-# we have chosen a depth of 2 and a num_cells of 128 as a compromise between runtime and performance.
+# We have chosen a depth of 2 and a num_cells of 128 as a compromise between runtime and performance.
 policy_net_blue = torch.nn.Sequential(
     MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],
@@ -120,7 +120,7 @@ policy_net_red = torch.nn.Sequential(
     ),
 )
 
-# wrap policy_net_blue in the standard tensordict format for TorchRL
+# Wrap the policy network in the standard tensordict format for TorchRL.
 policy_module_blue = TensorDictModule(
     policy_net_blue,
     in_keys=[("agent_blue", "observation")],
@@ -136,6 +136,7 @@ policy_module_red = TensorDictModule(
 # Select an action based on the outputs (logits) from the neural network by constructing a distribution to sample from.
 # In our case we create a categorical distribution as there are multiple discrete actions. We then sample from this
 # distribution using multinomial sampling (selecting each action with probability proportional to the categories weight).
+# Sampling from a distribution ensures stochasticity.
 policy_blue= ProbabilisticActor(
     module=policy_module_blue,
     # spec=env.action_spec_unbatched,
@@ -156,6 +157,8 @@ policy_red = ProbabilisticActor(
     return_log_prob=True,
 )
 
+# Create a single neural network for the critic. We have chosen a larger neural network
+# (depth of 2 and a num_cells of 256) for better value approximation.
 critic_net_blue = MultiAgentMLP(
     n_agent_inputs=env.observation_spec["agent_blue", "observation"].shape[-1],
     n_agent_outputs=1,
@@ -180,6 +183,7 @@ critic_net_red = MultiAgentMLP(
     activation_class=torch.nn.Tanh,
 )
 
+# wrap the critic network in the standard tensordict format for TorchRL
 critic_blue = TensorDictModule(
     module=critic_net_blue,
     in_keys=[("agent_blue", "observation")],
@@ -192,15 +196,20 @@ critic_red = TensorDictModule(
     out_keys=[("agent_red", "state_value")],
 )
 
+# Load previous policies for further training if required (checkpointing).
 if LOAD_CHECKPOINT:
     policy_blue= torch.load("policy_blue.pt", weights_only= False)
     policy_red = torch.load("policy_red.pt", weights_only= False)
 
+# TensorDictSequential allows us to pass both of our policies sequentially to the collector.
 combined_policy = TensorDictSequential(
     policy_blue,
     policy_red,
 )
 
+# The collector performs environment rollouts. A synchronised data collector stores a fixed number of frames
+# (frames_per_batch), before this batch is used for PPO updates.  This ensures we are learning on policy as
+# required by PPO.
 collector = SyncDataCollector(
     env,
     combined_policy,
@@ -210,8 +219,8 @@ collector = SyncDataCollector(
     total_frames=total_frames,
 )
 
-# Replay buffer creation
-
+# Create a replay buffer to store frames (transitions). By sampling without replacement we are naturally emptying
+# the replay buffer every optimisation loop. This ensures we remain on policy by not re-using old frames.
 replay_buffer_blue = ReplayBuffer(
     storage=LazyTensorStorage(
         frames_per_batch, device=vmas_device
@@ -228,8 +237,8 @@ replay_buffer_red = ReplayBuffer(
     batch_size=minibatch_size,  # We will sample minibatches of this size
 )
 
-# Loss function
-
+# Calculates both the actor and critic loss for the PPO algorithm. The actor loss uses clipping to ensure stability
+# through limited updates.
 loss_module_blue = ClipPPOLoss(
     actor_network=combined_policy[BLUE],
     critic_network=critic_blue,
@@ -246,7 +255,8 @@ loss_module_red = ClipPPOLoss(
     normalize_advantage=False,  # Important to avoid normalizing across the agent dimension
 )
 
-loss_module_blue.set_keys(  # We have to tell the loss where to find the keys
+# Connect our loss module with the tensor dictionary by providing the appropriate keys.
+loss_module_blue.set_keys(
     reward=env.reward_keys[0],
     action=env.action_keys[0],
     value=("agent_blue", "state_value"),
@@ -254,7 +264,7 @@ loss_module_blue.set_keys(  # We have to tell the loss where to find the keys
     terminated=("agent_blue", "terminated"),
 )
 
-loss_module_red.set_keys(  # We have to tell the loss where to find the keys
+loss_module_red.set_keys(
     reward=env.reward_keys[1],
     action=env.action_keys[1],
     value=("agent_red", "state_value"),
@@ -262,8 +272,8 @@ loss_module_red.set_keys(  # We have to tell the loss where to find the keys
     terminated=("agent_red", "terminated"),
 )
 
-# we think gamma and lmbda are parameters for the estimator (GAE)
-
+# The GAE computes the Generalised Advantage Estimation which measures actions against the average action in a given
+# state.
 loss_module_blue.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
 )
@@ -272,21 +282,25 @@ loss_module_red.make_value_estimator(
     ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
 )
 
-
 GAE_blue = loss_module_blue.value_estimator
 GAE_red = loss_module_red.value_estimator
 
+# Adam stands for Adaptive Moment Estimation.
+# The optimiser is used to update the policy during the optimisation loop
 optim_blue = torch.optim.Adam(loss_module_blue.parameters(), learning_rate_blue)
 optim_red = torch.optim.Adam(loss_module_red.parameters(), learning_rate_red)
 
+# progress bar
 pbar = tqdm(total=total_iterations, desc="episode_reward_mean = 0")
 
+# Used to graph training results
 episode_reward_mean_list_blue = []
 episode_reward_mean_list_red = []
 
-tuple_counter = 0
-
+# rollout loop
 for tensordict_data in collector:
+
+    # Done and terminated states need their own code due to not conforming to the (S,A,R,S') paradigm.
     tensordict_data.set(
         ("next", "agent_blue", "done"),
         tensordict_data.get(("next", "done"))
@@ -312,16 +326,18 @@ for tensordict_data in collector:
         .expand(tensordict_data.get_item_shape(("next", env.reward_keys[1]))),
     )
 
+    # Advantage estimation: compute GAE and add it to the tensordict
     with torch.no_grad():
         GAE_blue(
-            tensordict_data,                                            # must provide full tensordict
+            tensordict_data,                    # must provide full tensordict
             params=loss_module_blue.critic_network_params,
             target_params=loss_module_blue.target_critic_network_params,
-        ) # Compute GAE_blue and add it to the tensordict
+        )
 
+    # Ensure only blue agent data goes in the blue replay buffer.
     scrubbed = tensordict_data.exclude("agent_red", ("next", "agent_red"))
     data_view = scrubbed.reshape(-1)
-    replay_buffer_blue.extend(data_view)  # dw this appends "data_view" to the replay buffer
+    replay_buffer_blue.extend(data_view)        # this appends "data_view" to the replay buffer
 
     with torch.no_grad():
         GAE_red(
@@ -332,13 +348,13 @@ for tensordict_data in collector:
 
     scrubbed = tensordict_data.exclude("agent_blue", ("next", "agent_blue"))
     data_view = scrubbed.reshape(-1)
-    replay_buffer_red.extend(data_view)  # DW this appends "data_view" to the replay buffer
+    replay_buffer_red.extend(data_view)
 
+    # Optimisation loop
     for _ in range(total_epochs):
 
         for _ in range(frames_per_batch // minibatch_size):
             subdata = replay_buffer_blue.sample()
-            # print("blue subdata",subdata)
             loss_vals = loss_module_blue(subdata)
             loss_value = (
                     loss_vals["loss_objective"]
@@ -346,19 +362,21 @@ for tensordict_data in collector:
                     + loss_vals["loss_entropy"]
             )
 
+            # Triggers backpropagation to compute gradients.
             loss_value.backward()
 
             torch.nn.utils.clip_grad_norm_(
                 loss_module_blue.parameters(), max_grad_norm
-            )  # Optional
+            )
 
+            # Updates the parameters of policy (weights) based on the gradient values.
             optim_blue.step()
+
+            # Clears the calculated gradients for the next iteration.
             optim_blue.zero_grad()
 
         for _ in range(frames_per_batch // minibatch_size):
             subdata2 = replay_buffer_red.sample()
-            # print("red subdata",subdata)
-            # print(subdata)
             loss_vals = loss_module_red(subdata2)
             loss_value = (
                     loss_vals["loss_objective"]
@@ -370,14 +388,15 @@ for tensordict_data in collector:
 
             torch.nn.utils.clip_grad_norm_(
                 loss_module_red.parameters(), max_grad_norm
-            )  # Optional
+            )
 
             optim_red.step()
             optim_red.zero_grad()
 
+    # Update the collector's copies of the policies
     collector.update_policy_weights_()
 
-    # Logging
+    # Log episode rewards to produce a training graph
     done = tensordict_data.get(("next", "agent_blue", "done"))  # or tensordict_data.get(("next", "agent_red", "done"))
     episode_reward_mean_blue = (
         tensordict_data.get(("next", "agent_blue", "episode_reward"))[done].mean().item()
@@ -388,20 +407,21 @@ for tensordict_data in collector:
         tensordict_data.get(("next", "agent_red", "episode_reward"))[done].mean().item()
     )
     episode_reward_mean_list_red.append(episode_reward_mean_red)
+
+    # Update the progress bar.
     pbar.set_description(f"episode_reward_mean_blue/red = {episode_reward_mean_blue},{episode_reward_mean_red}", refresh=False)
     pbar.update()
 
+    # Save the new policies for runtime analysis.
     torch.save(combined_policy[BLUE], "policy_blue.pt")
     torch.save(combined_policy[RED], "policy_red.pt")
 
-# =============training loop finished, now show the learning graph ==========================
-
+# Training loop finished, now show the learning graphs.
 plt.plot(episode_reward_mean_list_blue)
 plt.xlabel("Training iterations")
 plt.ylabel("Reward")
 plt.title("Episode reward mean blue")
 plt.show()
-
 
 plt.plot(episode_reward_mean_list_red)
 plt.xlabel("Training iterations")
