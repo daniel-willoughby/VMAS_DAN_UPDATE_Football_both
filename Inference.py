@@ -92,7 +92,7 @@ red_policy_file = get_policy_file("Select red policy : ")
 environment_runs = get_environment_runs("Enter how many environment runs : ")
 
 print()
-print("Blue policy file :", blue_policy_file)
+print("Blue policy file :", blue_policy_ file)
 print("Red policy file :", red_policy_file)
 print("Number of environment runs :", environment_runs)
 
