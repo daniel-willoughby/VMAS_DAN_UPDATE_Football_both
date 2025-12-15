@@ -38,7 +38,7 @@ vmas_device = torch.device("cpu")           # we do not use a GPU
 
 # Configurable Hyperparameters - Baseline parameters v1
 frames_per_batch = 39996
-total_iterations = 5000
+total_iterations = 10000
 total_frames = frames_per_batch * total_iterations
 total_epochs = 4
 minibatch_size = 5000
