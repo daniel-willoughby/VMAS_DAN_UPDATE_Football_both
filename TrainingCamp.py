@@ -9,6 +9,7 @@ The agents can be trained from initial random weights and biases or from existin
 
 
 # Imports
+import csv
 
 import torch
 from torch.distributions import Categorical
@@ -35,19 +36,20 @@ RED = 1                                     # Team 1 is the red team
 LOAD_CHECKPOINT = False                     # Load pre-saved weights and biases?
 vmas_device = torch.device("cpu")           # we do not use a GPU
 
-# Configurable Hyperparameters
-frames_per_batch = 52800
-total_iterations = 3000
+# Configurable Hyperparameters - Baseline parameters v1
+frames_per_batch = 39996
+total_iterations = 5000
 total_frames = frames_per_batch * total_iterations
-total_epochs = 10
-minibatch_size = 2000
-learning_rate_blue = 3e-4
-learning_rate_red = 3e-4
-max_grad_norm = 0.5                         # PPO parameter ...
-clip_epsilon = 0.2                          # clipping parameter
+total_epochs = 4
+minibatch_size = 5000
+learning_rate_blue = 2e-4
+learning_rate_red = 2e-4
+value_loss_coef = 0.3                       # importance of critic during policy updates lower for adversarial
+max_grad_norm = 0.4                         # PPO parameter ...
+clip_epsilon = 0.15                          # clipping parameter
 gamma = 0.99                                # discount rate
-lmbda = 0.95                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
-epsilon = 0.01                              # entropy coefficient
+lmbda = 0.92                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
+epsilon = 0.03                              # entropy coefficient
 share_parameters_policy = True              # team members share a single policy
 set_composite_lp_aggregate(False).set()     # torchRL - disables auto log-probability aggregation
 share_parameters_critic = True              # all agents of the same team will use the same critic
@@ -57,7 +59,7 @@ mappo = True                                # Set to True for MAPPO, False for I
 # Environment Parameters
 n_blue_agents = 5
 n_red_agents = 5
-max_steps = 600                             # limit steps in an episode (truncate) if it doesnt terminate
+max_steps = 500                             # limit steps in an episode (truncate) if it doesnt terminate
 num_vmas_envs = (
     frames_per_batch // max_steps           # Number of parallel environments that VMAS will run (multi-threading)
 )
@@ -358,7 +360,7 @@ for tensordict_data in collector:
             loss_vals = loss_module_blue(subdata)
             loss_value = (
                     loss_vals["loss_objective"]
-                    + loss_vals["loss_critic"]
+                    + value_loss_coef * loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
             )
 
@@ -380,7 +382,7 @@ for tensordict_data in collector:
             loss_vals = loss_module_red(subdata2)
             loss_value = (
                     loss_vals["loss_objective"]
-                    + loss_vals["loss_critic"]
+                    + value_loss_coef * loss_vals["loss_critic"]
                     + loss_vals["loss_entropy"]
             )
 
@@ -415,6 +417,16 @@ for tensordict_data in collector:
     # Save the new policies for runtime analysis.
     torch.save(combined_policy[BLUE], "policy_blue.pt")
     torch.save(combined_policy[RED], "policy_red.pt")
+
+
+# Export the training data
+
+
+with open("results.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["iteration", "iteration,blue_episode_reward_mean", "red_episode_reward_mean"])
+    for i, (blue, red) in enumerate(zip(episode_reward_mean_list_blue, episode_reward_mean_list_red)):
+        writer.writerow([i, blue, red])
 
 # Training loop finished, now show the learning graphs.
 plt.plot(episode_reward_mean_list_blue)

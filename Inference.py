@@ -6,7 +6,7 @@ Trains two teams of agents simultaneously, red and blue, within the VMAS Footbal
 
 The agents can be trained from initial random weights and biases or from existing saved checkpoints.
 """
-
+1
 
 # Imports
 
@@ -33,7 +33,7 @@ vmas_device = torch.device("cpu")           # we do not use a GPU
 # Environment Parameters
 n_blue_agents = 5
 n_red_agents = 5
-max_steps = 600                             # limit steps in an episode (truncate) if it doesnt terminate
+max_steps = 500                             # limit steps in an episode (truncate) if it doesnt terminate
 num_vmas_envs = 1
 
 env = VmasEnv(
@@ -50,12 +50,14 @@ env = VmasEnv(
     enable_shooting=False                   # kicking/shooting physics added for blue team
 )
 
-# Let the user select between pre-saved policy checkpoints
+
+
 def get_policy_file(prompt):
+    """Let the user select between pre-saved policy checkpoints"""
     file_path = None
     while file_path is None:
         policy_file_list = [f.name for f in Path('.').iterdir() if f.is_file() and f.suffix == '.pt']
-        for i, f in enumerate(policy_file_list[:20], 1):  # Show first 20
+        for i, f in enumerate(policy_file_list[:], 1):      # show as many .pt files as exist
             print(f"{i:2d}. {f}")
         try:
             choice = int(input(prompt))
@@ -64,8 +66,8 @@ def get_policy_file(prompt):
             file_path = None
     return file_path
 
-# Prompt the user for the number of training runs
 def get_environment_runs(prompt):
+    """Prompt the user for the number of training runs"""
     value = None
     while value is None:
         try:
