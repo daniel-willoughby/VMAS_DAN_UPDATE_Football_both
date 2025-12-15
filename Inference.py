@@ -6,7 +6,7 @@ Trains two teams of agents simultaneously, red and blue, within the VMAS Footbal
 
 The agents can be trained from initial random weights and biases or from existing saved checkpoints.
 """
-1
+
 
 # Imports
 
