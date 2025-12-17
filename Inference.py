@@ -7,10 +7,11 @@ Trains two teams of agents simultaneously, red and blue, within the VMAS Footbal
 The agents can be trained from initial random weights and biases or from existing saved checkpoints.
 """
 
-
 # Imports
 
 import torch
+from matplotlib import pyplot as plt
+from sympy.polys.numberfields.galois_resolvents import generate_lambda_lookup
 
 from torchrl.envs import RewardSum, TransformedEnv
 from torchrl.envs.libs.vmas import VmasEnv
@@ -18,6 +19,7 @@ from torchrl.envs.utils import check_env_specs
 
 from tensordict.nn import set_composite_lp_aggregate, TensorDictModule, TensorDictSequential
 
+from pathlib import Path
 
 # Module-level constants and configuration
 BLUE = 0                                    # Team 0 is the blue team
@@ -26,12 +28,12 @@ LOAD_CHECKPOINT = False                     # Load pre-saved weights and biases?
 vmas_device = torch.device("cpu")           # we do not use a GPU
 
 # Inference Parameters
-environment_runs = 1
+# environment_runs = 1
 
 # Environment Parameters
 n_blue_agents = 5
 n_red_agents = 5
-max_steps = 600                             # limit steps in an episode (truncate) if it doesnt terminate
+max_steps = 500                             # limit steps in an episode (truncate) if it doesnt terminate
 num_vmas_envs = 1
 
 env = VmasEnv(
@@ -49,6 +51,31 @@ env = VmasEnv(
 )
 
 
+
+def get_policy_file(prompt):
+    """Let the user select between pre-saved policy checkpoints"""
+    file_path = None
+    while file_path is None:
+        policy_file_list = [f.name for f in Path('.').iterdir() if f.is_file() and f.suffix == '.pt']
+        for i, f in enumerate(policy_file_list[:], 1):      # show as many .pt files as exist
+            print(f"{i:2d}. {f}")
+        try:
+            choice = int(input(prompt))
+            file_path = Path(policy_file_list[choice - 1]) if 1 <= choice <= len(policy_file_list) else None
+        except:
+            file_path = None
+    return file_path
+
+def get_environment_runs(prompt):
+    """Prompt the user for the number of training runs"""
+    value = None
+    while value is None:
+        try:
+            value = int(input(prompt))
+        except:
+            value = None
+    return value
+
 # Initialisation
 
 torch.manual_seed(0)                        # a seed allows repeatable results for comparative/analytic purposes
@@ -61,11 +88,23 @@ env = TransformedEnv(
 
 check_env_specs(env)                        # simple self-test to sanity check definitions
 
+# obtain the policies and the number of times to run
+blue_policy_file =get_policy_file("Select blue policy : ")
+red_policy_file = get_policy_file("Select red policy : ")
+environment_runs = get_environment_runs("Enter how many environment runs : ")
+
+print()
+print("Blue policy file :", blue_policy_file)
+print("Red policy file :", red_policy_file)
+print("Number of environment runs :", environment_runs)
 
 #load policies for inference:
-policy_blue = torch.load("policy_blue.pt", weights_only= False)
-policy_red = torch.load("policy_red.pt", weights_only= False)
+policy_blue = torch.load(blue_policy_file, weights_only= False)
+policy_red = torch.load(red_policy_file, weights_only= False)
 
+# old code ...
+# policy_blue = torch.load("policy_blue.pt", weights_only= False)
+# policy_red = torch.load("policy_red.pt", weights_only= False)
 
 # TensorDictSequential allows us to pass both of our policies sequentially to the collector.
 combined_policy = TensorDictSequential(
@@ -73,22 +112,47 @@ combined_policy = TensorDictSequential(
     policy_red,
 )
 
+episode_reward_mean_list_blue = []
+episode_reward_mean_list_red = []
+
 combined_policy.eval()
-
-
 
 for _ in range (environment_runs):
     with torch.no_grad():                   # torch no grad is a setting for inference that disables gradient calculation.
-       env.rollout(
+       tensordict = env.rollout(
            max_steps=max_steps,
            policy=combined_policy,
            callback=lambda env, _: env.render(),
            auto_cast_to_device=True,
            break_when_any_done=False,
        )
+    done = tensordict.get(("next", "agent_blue", "done"))  # or tensordict_data.get(("next", "agent_red", "done"))
+    episode_reward_mean_blue = (
+        tensordict.get(("next", "agent_blue", "episode_reward"))[done].mean().item()
+    )
+    episode_reward_mean_list_blue.append(episode_reward_mean_blue)
 
+    episode_reward_mean_red = (
+        tensordict.get(("next", "agent_red", "episode_reward"))[done].mean().item()
+    )
+    episode_reward_mean_list_red.append(episode_reward_mean_red)
+
+
+if sum(episode_reward_mean_list_blue) >= sum(episode_reward_mean_list_red):
+    print("The winner is blue with a reward delta of: ", sum(episode_reward_mean_list_blue)-sum(episode_reward_mean_list_red))
+else:
+    print("The winner is red with a reward delta of: ", sum(episode_reward_mean_list_red) - sum(episode_reward_mean_list_blue))
+
+
+
+plt.plot(episode_reward_mean_list_blue, label="blue reward")
+plt.plot(episode_reward_mean_list_red, label="red reward")
+plt.xlabel("Training iterations")
+plt.ylabel("Reward")
+plt.title("Episode reward mean")
+plt.legend()
+plt.show()
 
 # adding rollout rewards
 # rollout = env.rollout(max_steps=100)
 # rewards = rollout["agent_blue","episode_reward"]  # Shape: (n_agents, max_steps) or (total_steps,)
-
