@@ -50,7 +50,7 @@ value_loss_coef = 0.3                      # importance of critic during policy 
 max_grad_norm = 0.4                         # PPO parameter ...
 clip_epsilon = 0.15                          # clipping parameter
 gamma = 0.99                                # discount rate
-lmbda = 0.89                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
+lmbda = 0.92                                # "lmbda" is the standard spelling in TorchRL (not "lambda")
 epsilon = 0.03                              # entropy coefficient
 share_parameters_policy = False              # team members share a single policy
 set_composite_lp_aggregate(False).set()     # torchRL - disables auto log-probability aggregation - mandatory for PPO
