@@ -41,9 +41,9 @@ frames_per_batch = 39996
 total_iterations = 10000
 total_frames = frames_per_batch * total_iterations
 total_epochs = 4
-minibatch_size = 10000
-learning_rate_blue = 3e-4
-learning_rate_red = 3e-4
+minibatch_size = 5000
+learning_rate_blue = 2e-4
+learning_rate_red = 2e-4
 value_loss_coef = 0.3                      # importance of critic during policy updates lower for adversarial
 max_grad_norm = 0.4                         # PPO parameter ...
 clip_epsilon = 0.15                          # clipping parameter
@@ -419,8 +419,8 @@ for tensordict_data in collector:
     pbar.update()
 
     # Save the new policies for runtime analysis.
-    torch.save(combined_policy[BLUE], "policy_blue.pt")
-    torch.save(combined_policy[RED], "policy_red.pt")
+    torch.save(combined_policy[BLUE], "policy_blue_clone.pt")
+    torch.save(combined_policy[RED], "policy_red_clone.pt")
 
 
 # Export the training data
